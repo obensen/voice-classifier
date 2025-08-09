@@ -1,0 +1,24 @@
+Merhaba! Voice Classifier projesine GitHub'dan devam ediyorum. 
+
+PROJE REPO: https://github.com/[username]/voice-classifier
+
+MEVCUT DURUM: 
+- Temel altyapı tamamlandı (schemas, cache, main, config, requirements)
+- 13 endpoint'li FastAPI uygulaması hazır
+- Comprehensive configuration sistemi var
+- Mock responses ile test edilebilir durumda
+
+SON KALINAN YER: 
+PROGRESS_LOG.md dosyasına göre şimdi `app/utils/audio_loader.py` dosyasını oluşturacağız.
+
+HEDEF: 
+Ses dosyalarını yükleme ve preprocessing altyapısını oluşturmak.
+
+DOSYA İÇERİĞİ:
+- Audio file loading (multiple formats)
+- Format validation 
+- Preprocessing (normalization, noise reduction, resampling)
+- Metadata extraction
+- Robust error handling
+
+Lütfen audio_loader.py dosyasını oluştur ve PROGRESS_LOG.md'yi güncelle. Projenin mevcut yapısına uygun, config.py'deki ayarları kullanan bir implementasyon istiyorum.

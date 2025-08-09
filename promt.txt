@@ -1,6 +1,6 @@
 Merhaba! Voice Classifier projesine GitHub'dan devam ediyorum. 
 
-PROJE REPO: https://github.com/[username]/voice-classifier
+PROJE REPO: https://github.com/obensen/voice-classifier
 
 MEVCUT DURUM: 
 - Temel altyapı tamamlandı (schemas, cache, main, config, requirements)
@@ -22,3 +22,136 @@ DOSYA İÇERİĞİ:
 - Robust error handling
 
 Lütfen audio_loader.py dosyasını oluştur ve PROGRESS_LOG.md'yi güncelle. Projenin mevcut yapısına uygun, config.py'deki ayarları kullanan bir implementasyon istiyorum.
+
+
+
+
+
+
+========================================================
+
+
+# Voice Classifier Projesi - GitHub'dan Devam Prompt'u
+
+## 🎯 PROJE BİLGİLERİ
+
+**Repo**: https://github.com/obensen/voice-classifier  
+**Proje Türü**: TTS (Text-to-Speech) ses analizi ve video kategorisi eşleştirme sistemi  
+**Teknoloji Stack**: FastAPI, PyTorch, Whisper, SpeechBrain, Librosa  
+**Hedef**: Ses dosyalarını analiz ederek cinsiyet, yaş, dil, ton, duygu tespiti yapıp video kategorilerine eşleştirme
+
+## 📊 MEVCUT DURUM
+
+### ✅ TAMAMLANAN DOSYALAR (5/20)
+1. **`app/models/schemas.py`** - Pydantic modelleri, Enum'lar, request/response yapıları
+2. **`app/utils/cache.py`** - In-memory cache sistemi, TTL, metrics
+3. **`main.py`** - FastAPI uygulaması, 13 endpoint, async file handling  
+4. **`app/config.py`** - Kapsamlı environment/configuration yönetimi
+5. **`requirements.txt`** - ML, audio, web framework bağımlılıkları
+
+### 🔄 ŞU ANDA ÜZERİNDE ÇALIŞILAN
+**Sıradaki dosya**: `app/utils/audio_loader.py`
+
+### 📋 YAPILACAKLAR LİSTESİ
+**Öncelik 1 - Utils Katmanı:**
+- [ ] `app/utils/audio_loader.py` - Ses dosyası yükleme, format validation, preprocessing
+- [ ] `app/utils/feature_extract.py` - MFCC, spectral, prosodic feature extraction
+
+**Öncelik 2 - Servis Katmanı:**
+- [ ] `app/services/analysis_service.py` - Ana analiz koordinatörü
+- [ ] `app/services/whisper_language_service.py` - Dil tespiti (Whisper)
+- [ ] `app/services/simple_gender_service.py` - Cinsiyet analizi
+- [ ] `app/services/simple_age_service.py` - Yaş analizi  
+- [ ] `app/services/simple_tone_service.py` - Ton analizi
+- [ ] `app/services/simple_emotion_service.py` - Duygu analizi
+- [ ] `app/services/voice_category_matcher.py` - Kategori eşleştirme
+- [ ] `app/services/tts_analyzer_service.py` - TTS analiz koordinatörü
+
+## 🏗️ PROJE MİMARİSİ
+
+### Temel Veri Akışı:
+```
+Audio File → audio_loader.py → feature_extract.py → Analysis Services → Category Matcher → API Response
+```
+
+### Servis Mimarisi:
+- **Singleton Pattern**: Servisler tek instance ile çalışır (memory optimization)
+- **Lazy Loading**: Modeller sadece gerektiğinde yüklenir
+- **Cache Strategy**: 5 dakika TTL ile sonuçlar cache'lenir
+- **Parallel Analysis**: Tüm analizler aynı anda çalışır
+
+### Konfigürasyon Sistemi:
+- **Environment Variables**: `.env` dosyasından yüklenir
+- **Pydantic Settings**: Type-safe configuration management
+- **Model Settings**: Her analiz tipi için ayrı threshold'lar
+- **Audio Settings**: Format, sample rate, preprocessing ayarları
+
+## 📝 DOSYA İMPLEMENTASYON REHBERİ
+
+### `audio_loader.py` Beklenen İçerik:
+```python
+class AudioLoader:
+    def __init__(self, config: Settings)
+    async def load_audio(self, file_path: str) -> AudioData
+    def validate_format(self, file_path: str) -> bool
+    def preprocess_audio(self, audio_data) -> ProcessedAudio
+    def extract_metadata(self, file_path: str) -> AudioMetadata
+    def resample_audio(self, audio, target_sr: int) -> AudioData
+    def normalize_audio(self, audio) -> AudioData
+```
+
+**Özellikler**:
+- Desteklenen formatlar: WAV, MP3, FLAC, OGG, M4A, AAC
+- File size kontrolü (max 50MB)
+- Duration kontrolü (max 5 dakika)
+- Preprocessing: normalization, noise reduction, resampling
+- Error handling: corrupt files, unsupported formats
+
+### Entegrasyon Noktaları:
+- **config.py**: `get_audio_config()` methodunu kullan
+- **cache.py**: File hash'lere göre cache'leme
+- **main.py**: `save_upload_file()` ile entegrasyon
+- **schemas.py**: `AudioMetadata` model kullan
+
+### Kod Stili:
+- **Async/await**: Tüm I/O işlemleri async
+- **Type hints**: Full typing desteği
+- **Error handling**: Try/catch ile robust error management
+- **Logging**: Structured logging kullan
+- **Performance**: Memory efficient processing
+
+## 🎯 CONTEXT PROMPT
+
+Sen bu projeyi GitHub'dan aldıktan sonra şu şekilde devam et:
+
+**"Merhaba! Voice Classifier projesine GitHub'dan devam ediyorum.**
+
+**REPO**: https://github.com/obensen/voice-classifier
+
+**DURUM**: Projenin temel altyapısı tamamlandı (main.py, config.py, schemas.py, cache.py, requirements.txt). Şimdi `app/utils/audio_loader.py` dosyasını implement edeceğiz.
+
+**HEDEFİM**: Ses dosyalarını yükleme, format validation, preprocessing ve metadata extraction işlemlerini yapan AudioLoader sınıfını oluşturmak.
+
+**GEREKSİNİMLER**:
+- config.py'deki audio settings'leri kullan
+- Async/await pattern'i
+- Desteklenen formatlar: WAV, MP3, FLAC, OGG, M4A, AAC  
+- File validation (size, duration, format)
+- Preprocessing: normalize, resample, noise reduction
+- Metadata extraction: duration, sample_rate, channels
+- Cache integration için file hash desteği
+- Robust error handling
+
+Bu dosyayı oluşturduktan sonra PROGRESS_LOG.md'yi güncelle. Projenin mevcut yapısına uygun, performanslı ve production-ready bir implementasyon istiyorum."**
+
+## 🔍 ÖNEMLİ NOTLAR
+
+1. **Mevcut Kod Kalitesi**: Tüm dosyalar production-ready kalitede yazılmış
+2. **Type Safety**: Full type hints kullanılıyor
+3. **Error Handling**: Comprehensive error management var
+4. **Performance**: Memory ve speed optimizations uygulanmış
+5. **Modularity**: Gevşek bağlı, yeniden kullanılabilir kod
+6. **Configuration**: Environment-based, flexible settings
+7. **Testing**: Mock responses ile testable yapı
+
+**Bu prompt'u kullandığında proje context'ini tam olarak anlayacaksın ve kaldığımız yerden devam edebileceksin.**

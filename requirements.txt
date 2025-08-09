@@ -1,0 +1,158 @@
+# Voice Classifier API - Python Dependencies
+# Core framework requirements
+
+# ================================
+# WEB FRAMEWORK & API
+# ================================
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6          # File upload support
+pydantic[email]==2.5.0
+pydantic-settings==2.1.0         # Settings management
+
+# ================================  
+# MACHINE LEARNING & AI
+# ================================
+
+# OpenAI Whisper for language detection
+openai-whisper==20231117
+torch==2.1.1                     # PyTorch for ML models
+torchaudio==2.1.1               # Audio processing for PyTorch
+
+# SpeechBrain for speech analysis
+speechbrain==0.5.16
+
+# Traditional ML
+scikit-learn==1.3.2
+numpy==1.24.3
+scipy==1.11.4
+
+# ================================
+# AUDIO PROCESSING
+# ================================
+
+# Core audio libraries
+librosa==0.10.1                  # Audio analysis and feature extraction
+soundfile==0.12.1               # Audio file I/O
+audioread==3.0.1                # Audio file reading
+resampy==0.4.2                  # Audio resampling
+
+# Audio format support
+pydub==0.25.1                   # Audio manipulation
+ffmpeg-python==0.2.0            # FFmpeg wrapper
+
+# ================================
+# DATA PROCESSING
+# ================================
+pandas==2.1.4                   # Data manipulation
+matplotlib==3.8.2               # Plotting (for audio visualization)
+seaborn==0.12.2                 # Statistical plotting
+
+# ================================
+# HTTP & NETWORKING
+# ================================
+httpx==0.25.2                   # Async HTTP client
+aiofiles==23.2.1               # Async file operations
+requests==2.31.0               # HTTP library
+
+# ================================
+# DATABASE & STORAGE (Future)
+# ================================
+# Uncomment when database support is added
+# sqlalchemy==2.0.23
+# asyncpg==0.29.0                # PostgreSQL async driver
+# alembic==1.13.1               # Database migrations
+
+# ================================
+# CACHING & PERFORMANCE
+# ================================
+# redis==5.0.1                  # Redis client (for distributed cache)
+# memcached==1.59               # Memcached client
+cachetools==5.3.2              # In-memory caching utilities
+
+# ================================
+# MONITORING & LOGGING
+# ================================
+loguru==0.7.2                  # Advanced logging
+prometheus-client==0.19.0      # Metrics collection
+structlog==23.2.0             # Structured logging
+
+# ================================
+# DEVELOPMENT & TESTING
+# ================================
+pytest==7.4.3                  # Testing framework  
+pytest-asyncio==0.21.1         # Async testing support
+pytest-cov==4.1.0             # Coverage reporting
+black==23.11.0                 # Code formatting
+flake8==6.1.0                  # Code linting
+mypy==1.7.1                    # Type checking
+pre-commit==3.6.0             # Git hooks
+
+# HTTP testing
+httpx[http2]==0.25.2
+pytest-mock==3.12.0
+
+# ================================
+# UTILITIES
+# ================================
+python-dotenv==1.0.0           # Environment variables
+click==8.1.7                   # CLI interface
+rich==13.7.0                   # Rich terminal output
+typer==0.9.0                   # CLI framework
+pathlib2==2.3.7               # Path utilities (Python < 3.4 compat)
+
+# File handling
+watchdog==3.0.0               # File system monitoring
+tempfile==1.0                  # Temporary file handling
+
+# ================================
+# SECURITY
+# ================================
+cryptography==41.0.8          # Cryptographic functions
+bcrypt==4.1.2                 # Password hashing
+python-jose[cryptography]==3.3.0  # JWT handling
+
+# ================================
+# OPTIONAL: ADVANCED ML FEATURES
+# ================================
+# Uncomment based on specific model requirements
+
+# Deep learning frameworks
+# tensorflow==2.15.0           # TensorFlow
+# keras==2.15.0               # Keras
+# transformers==4.36.2        # Hugging Face transformers
+
+# Audio-specific ML
+# pyAudioAnalysis==0.3.14     # Audio analysis toolkit  
+# python_speech_features==0.6  # Speech feature extraction
+# webrtcvad==2.0.10           # Voice activity detection
+
+# ================================
+# SYSTEM DEPENDENCIES NOTES
+# ================================
+# The following system packages may need to be installed:
+# Ubuntu/Debian: 
+#   sudo apt-get install ffmpeg libsndfile1 libsndfile1-dev
+#   sudo apt-get install python3-dev build-essential
+#
+# macOS:
+#   brew install ffmpeg libsndfile
+#
+# Windows: 
+#   Install ffmpeg and add to PATH
+#   Visual Studio Build Tools may be required
+
+# ================================
+# VERSION NOTES
+# ================================
+# - Python 3.11+ required
+# - CUDA support optional (for GPU acceleration)
+# - Some packages may require compilation
+# - Use virtual environment recommended
+
+# ================================
+# PRODUCTION OPTIMIZATIONS
+# ================================
+# For production deployment, consider:
+# gunicorn==21.2.0             # Production WSGI server
+# gevent==23.9.1               # Async library for gunicorn

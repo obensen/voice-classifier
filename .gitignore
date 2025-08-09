@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Project specific
+temp_audio/
+logs/
+models/
+.env
+
+# IDE
+.vscode/
+.idea/

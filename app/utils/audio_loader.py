@@ -1,570 +1,525 @@
-# app/utils/audio_loader.py
-# Ses dosyası yükleme, doğrulama ve ön işleme sistemi
+"""
+Audio loading and preprocessing utilities for voice classification.
+
+This module handles audio file loading, validation, preprocessing and metadata extraction
+with support for various audio formats and robust error handling.
+"""
 
 import os
+import hashlib
+import logging
+import asyncio
+from pathlib import Path
+from typing import Optional, Tuple, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
 import librosa
 import soundfile as sf
-import numpy as np
-from pathlib import Path
-from typing import Tuple, Optional, Dict, Any, List
-import logging
-import tempfile
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
+import mutagen
+from mutagen.id3 import ID3NoHeaderError
 
-from app.config import settings
+from app.config import get_audio_config, Settings
+from app.models.schemas import AudioData, AudioMetadata, ProcessingError
+from app.utils.cache import cache_manager
 
 logger = logging.getLogger(__name__)
 
-class AudioLoadError(Exception):
-    """Ses dosyası yükleme hatası"""
-    pass
-
-class AudioValidationError(Exception):
-    """Ses dosyası doğrulama hatası"""
+class AudioProcessingError(Exception):
+    """Custom exception for audio processing errors."""
     pass
 
 class AudioLoader:
     """
-    Ses dosyası yükleme ve ön işleme sınıfı
-    Farklı formatları destekler ve audio preprocessing yapar
+    Audio file loader with comprehensive validation, preprocessing and metadata extraction.
+    
+    Features:
+    - Multi-format support (WAV, MP3, FLAC, OGG, M4A, AAC)
+    - File validation (size, duration, format)
+    - Audio preprocessing (normalization, resampling, noise reduction)
+    - Metadata extraction
+    - Async processing with thread pool
+    - Memory efficient processing
     """
     
-    def __init__(self):
-        """AudioLoader'ı başlat"""
-        self.supported_formats = settings.supported_audio_formats
-        self.target_sample_rate = settings.default_sample_rate
-        self.max_duration = settings.max_audio_duration_seconds
-        self.max_file_size = settings.max_file_size_bytes
-        
-        logger.info(f"AudioLoader initialized - Formats: {self.supported_formats}")
-        logger.info(f"Target sample rate: {self.target_sample_rate}Hz")
-        logger.info(f"Max duration: {self.max_duration}s, Max size: {self.max_file_size//1024//1024}MB")
+    SUPPORTED_FORMATS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac'}
     
-    def validate_file(self, file_path: str) -> Dict[str, Any]:
+    def __init__(self, config: Optional[Settings] = None):
+        """Initialize AudioLoader with configuration."""
+        self.config = config or get_audio_config()
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        
+        # Audio processing settings
+        self.max_file_size = getattr(self.config, 'max_file_size_mb', 50) * 1024 * 1024
+        self.max_duration = getattr(self.config, 'max_duration_seconds', 300)
+        self.target_sample_rate = getattr(self.config, 'target_sample_rate', 16000)
+        self.normalize_audio = getattr(self.config, 'normalize_audio', True)
+        self.apply_noise_reduction = getattr(self.config, 'apply_noise_reduction', True)
+        
+        logger.info(f"AudioLoader initialized with target_sr={self.target_sample_rate}")
+    
+    async def load_audio(self, file_path: str) -> AudioData:
         """
-        Ses dosyasını doğrula
+        Load and process audio file asynchronously.
         
         Args:
-            file_path: Ses dosyası yolu
+            file_path: Path to audio file
             
         Returns:
-            Dict: Dosya bilgileri
+            AudioData: Processed audio data with metadata
             
         Raises:
-            AudioValidationError: Doğrulama hatası
+            AudioProcessingError: If file cannot be processed
         """
         try:
-            file_path = Path(file_path)
+            # Check cache first
+            file_hash = await self._get_file_hash(file_path)
+            cache_key = f"audio_data:{file_hash}"
             
-            # Dosya varlığı kontrolü
-            if not file_path.exists():
-                raise AudioValidationError(f"File not found: {file_path}")
+            cached_data = cache_manager.get(cache_key)
+            if cached_data:
+                logger.debug(f"Audio data loaded from cache for {file_path}")
+                return cached_data
             
-            # Dosya boyutu kontrolü
-            file_size = file_path.stat().st_size
-            if file_size > self.max_file_size:
-                raise AudioValidationError(
-                    f"File too large: {file_size//1024//1024}MB > {self.max_file_size//1024//1024}MB"
-                )
+            # Validate file
+            await self._validate_file(file_path)
             
-            # Format kontrolü
-            file_extension = file_path.suffix.lower().lstrip('.')
-            if file_extension not in self.supported_formats:
-                raise AudioValidationError(
-                    f"Unsupported format: {file_extension}. Supported: {self.supported_formats}"
-                )
+            # Load audio in thread pool
+            audio_data, sample_rate = await asyncio.get_event_loop().run_in_executor(
+                self.executor, self._load_audio_sync, file_path
+            )
             
-            # Temel audio bilgileri
-            try:
-                info = sf.info(str(file_path))
-                duration = info.frames / info.samplerate
-                
-                # Süre kontrolü
-                if duration > self.max_duration:
-                    raise AudioValidationError(
-                        f"Audio too long: {duration:.1f}s > {self.max_duration}s"
-                    )
-                
-                validation_result = {
-                    "file_path": str(file_path),
-                    "file_size": file_size,
-                    "format": file_extension,
-                    "duration": duration,
-                    "sample_rate": info.samplerate,
-                    "channels": info.channels,
-                    "frames": info.frames,
-                    "valid": True
-                }
-                
-                logger.info(f"File validated: {file_path.name} - {duration:.1f}s, {info.samplerate}Hz")
-                return validation_result
-                
-            except Exception as e:
-                # soundfile başarısız olursa pydub ile dene
-                try:
-                    audio_segment = AudioSegment.from_file(str(file_path))
-                    duration = len(audio_segment) / 1000.0  # milisaniyeden saniyeye
-                    
-                    if duration > self.max_duration:
-                        raise AudioValidationError(
-                            f"Audio too long: {duration:.1f}s > {self.max_duration}s"
-                        )
-                    
-                    validation_result = {
-                        "file_path": str(file_path),
-                        "file_size": file_size,
-                        "format": file_extension,
-                        "duration": duration,
-                        "sample_rate": audio_segment.frame_rate,
-                        "channels": audio_segment.channels,
-                        "frames": int(duration * audio_segment.frame_rate),
-                        "valid": True,
-                        "loaded_with": "pydub"
-                    }
-                    
-                    logger.info(f"File validated with pydub: {file_path.name}")
-                    return validation_result
-                    
-                except Exception as inner_e:
-                    raise AudioValidationError(f"Cannot read audio file: {e}, {inner_e}")
-        
-        except AudioValidationError:
-            raise
+            # Preprocess audio
+            processed_audio = await self._preprocess_audio(audio_data, sample_rate)
+            
+            # Extract metadata
+            metadata = await self._extract_metadata(file_path, processed_audio, sample_rate)
+            
+            # Create AudioData object
+            result = AudioData(
+                audio_data=processed_audio,
+                sample_rate=self.target_sample_rate,
+                metadata=metadata,
+                file_hash=file_hash
+            )
+            
+            # Cache result
+            cache_manager.set(cache_key, result, ttl=300)  # 5 minutes
+            
+            logger.info(f"Audio loaded successfully: {file_path}")
+            return result
+            
         except Exception as e:
-            raise AudioValidationError(f"Validation error: {e}")
+            logger.error(f"Failed to load audio {file_path}: {str(e)}")
+            raise AudioProcessingError(f"Audio loading failed: {str(e)}") from e
     
-    def load_audio(
-        self, 
-        file_path: str, 
-        target_sr: Optional[int] = None,
-        mono: bool = True,
-        normalize: bool = None
-    ) -> Tuple[np.ndarray, int]:
+    async def validate_format(self, file_path: str) -> bool:
         """
-        Ses dosyasını yükle ve işle
+        Validate if file format is supported.
         
         Args:
-            file_path: Ses dosyası yolu
-            target_sr: Hedef sample rate (None = default)
-            mono: Mono'ya dönüştür mü
-            normalize: Normalize et mi (None = config'den al)
+            file_path: Path to audio file
             
         Returns:
-            Tuple[np.ndarray, int]: (audio_data, sample_rate)
-            
-        Raises:
-            AudioLoadError: Yükleme hatası
+            bool: True if format is supported
         """
         try:
-            # Dosyayı doğrula
-            validation_info = self.validate_file(file_path)
+            file_extension = Path(file_path).suffix.lower()
+            return file_extension in self.SUPPORTED_FORMATS
+        except Exception:
+            return False
+    
+    async def _validate_file(self, file_path: str) -> None:
+        """
+        Comprehensive file validation.
+        
+        Args:
+            file_path: Path to audio file
             
-            # Parametreleri hazırla
-            target_sample_rate = target_sr or self.target_sample_rate
-            should_normalize = normalize if normalize is not None else settings.normalize_audio
-            
-            logger.info(f"Loading audio: {Path(file_path).name}")
-            
-            # Audio'yu yükle
-            try:
-                # Önce librosa ile dene (daha güvenilir preprocessing)
-                audio_data, sample_rate = librosa.load(
-                    file_path,
-                    sr=target_sample_rate,
-                    mono=mono,
-                    dtype=np.float32
+        Raises:
+            AudioProcessingError: If validation fails
+        """
+        path = Path(file_path)
+        
+        # Check if file exists
+        if not path.exists():
+            raise AudioProcessingError(f"File not found: {file_path}")
+        
+        # Check file size
+        file_size = path.stat().st_size
+        if file_size > self.max_file_size:
+            raise AudioProcessingError(
+                f"File size ({file_size / 1024 / 1024:.1f}MB) exceeds limit "
+                f"({self.max_file_size / 1024 / 1024}MB)"
+            )
+        
+        # Check format
+        if not await self.validate_format(file_path):
+            raise AudioProcessingError(
+                f"Unsupported format: {path.suffix}. "
+                f"Supported formats: {', '.join(self.SUPPORTED_FORMATS)}"
+            )
+        
+        # Check if file is readable and not corrupted
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                self.executor, self._validate_audio_file, file_path
+            )
+        except Exception as e:
+            raise AudioProcessingError(f"File validation failed: {str(e)}") from e
+    
+    def _validate_audio_file(self, file_path: str) -> None:
+        """Validate audio file by attempting to read basic info."""
+        try:
+            # Try with librosa first
+            duration = librosa.get_duration(path=file_path)
+            if duration > self.max_duration:
+                raise AudioProcessingError(
+                    f"Audio duration ({duration:.1f}s) exceeds limit ({self.max_duration}s)"
                 )
-                
-                logger.debug(f"Loaded with librosa: {audio_data.shape}, {sample_rate}Hz")
-                
-            except Exception as e:
-                logger.warning(f"Librosa failed, trying soundfile: {e}")
-                
-                # soundfile ile dene
-                try:
-                    audio_data, sample_rate = sf.read(file_path, dtype=np.float32)
-                    
-                    # Mono dönüşüm
-                    if mono and len(audio_data.shape) > 1:
-                        audio_data = np.mean(audio_data, axis=1)
-                    
-                    # Sample rate dönüşümü
-                    if sample_rate != target_sample_rate:
-                        audio_data = librosa.resample(
-                            audio_data, 
-                            orig_sr=sample_rate, 
-                            target_sr=target_sample_rate
-                        )
-                        sample_rate = target_sample_rate
-                        
-                except Exception as inner_e:
-                    logger.warning(f"Soundfile failed, trying pydub: {inner_e}")
-                    
-                    # Son çare: pydub
-                    audio_data, sample_rate = self._load_with_pydub(
-                        file_path, target_sample_rate, mono
+        except Exception:
+            # Try with pydub as fallback
+            try:
+                audio = AudioSegment.from_file(file_path)
+                duration = len(audio) / 1000.0
+                if duration > self.max_duration:
+                    raise AudioProcessingError(
+                        f"Audio duration ({duration:.1f}s) exceeds limit ({self.max_duration}s)"
                     )
+            except CouldntDecodeError as e:
+                raise AudioProcessingError(f"Corrupted or invalid audio file") from e
+    
+    def _load_audio_sync(self, file_path: str) -> Tuple[np.ndarray, int]:
+        """
+        Synchronous audio loading using librosa.
+        
+        Args:
+            file_path: Path to audio file
             
-            # Ön işleme
-            audio_data = self._preprocess_audio(audio_data, should_normalize)
+        Returns:
+            Tuple of (audio_data, sample_rate)
+        """
+        try:
+            # Load with librosa (handles most formats well)
+            audio_data, sample_rate = librosa.load(
+                file_path, 
+                sr=None,  # Keep original sample rate initially
+                mono=True,  # Convert to mono
+                dtype=np.float32
+            )
             
-            # Son kontroller
-            if len(audio_data) == 0:
-                raise AudioLoadError("Loaded audio is empty")
-            
-            duration = len(audio_data) / sample_rate
-            logger.info(f"Audio loaded successfully: {duration:.2f}s, {sample_rate}Hz, shape: {audio_data.shape}")
-            
+            logger.debug(f"Loaded audio: shape={audio_data.shape}, sr={sample_rate}")
             return audio_data, sample_rate
             
-        except AudioValidationError:
-            raise AudioLoadError(f"Validation failed for {file_path}")
         except Exception as e:
-            logger.error(f"Failed to load audio {file_path}: {e}")
-            raise AudioLoadError(f"Audio loading failed: {e}")
+            # Fallback to pydub for problematic formats
+            logger.warning(f"Librosa failed, trying pydub: {str(e)}")
+            return self._load_with_pydub(file_path)
     
-    def _load_with_pydub(
-        self, 
-        file_path: str, 
-        target_sample_rate: int, 
-        mono: bool
-    ) -> Tuple[np.ndarray, int]:
-        """Pydub ile ses dosyası yükleme (son çare)"""
-        try:
-            audio_segment = AudioSegment.from_file(file_path)
-            
-            # Mono dönüşüm
-            if mono:
-                audio_segment = audio_segment.set_channels(1)
-            
-            # Sample rate dönüşüm
-            if audio_segment.frame_rate != target_sample_rate:
-                audio_segment = audio_segment.set_frame_rate(target_sample_rate)
-            
-            # NumPy array'e dönüştür
-            audio_data = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
-            
-            # Normalize et (16-bit'den float32'ye)
-            if audio_segment.sample_width == 2:  # 16-bit
-                audio_data = audio_data / 32768.0
-            elif audio_segment.sample_width == 4:  # 32-bit
-                audio_data = audio_data / 2147483648.0
-            
-            # Stereo ise reshape et
-            if not mono and audio_segment.channels == 2:
-                audio_data = audio_data.reshape((-1, 2))
-            
-            logger.info(f"Loaded with pydub: {audio_segment.frame_rate}Hz")
-            return audio_data, target_sample_rate
-            
-        except Exception as e:
-            raise AudioLoadError(f"Pydub loading failed: {e}")
-    
-    def _preprocess_audio(self, audio_data: np.ndarray, normalize: bool) -> np.ndarray:
+    def _load_with_pydub(self, file_path: str) -> Tuple[np.ndarray, int]:
         """
-        Audio ön işleme
+        Fallback audio loading using pydub.
         
         Args:
-            audio_data: Ham audio verisi
-            normalize: Normalize edilsin mi
+            file_path: Path to audio file
             
         Returns:
-            np.ndarray: İşlenmiş audio verisi
+            Tuple of (audio_data, sample_rate)
         """
-        processed_audio = audio_data.copy()
+        try:
+            # Load with pydub
+            audio = AudioSegment.from_file(file_path)
+            
+            # Convert to mono
+            if audio.channels > 1:
+                audio = audio.set_channels(1)
+            
+            # Convert to numpy array
+            audio_data = np.array(audio.get_array_of_samples(), dtype=np.float32)
+            
+            # Normalize to [-1, 1] range
+            if audio.sample_width == 2:  # 16-bit
+                audio_data = audio_data / 32768.0
+            elif audio.sample_width == 4:  # 32-bit
+                audio_data = audio_data / 2147483648.0
+            elif audio.sample_width == 1:  # 8-bit
+                audio_data = (audio_data - 128) / 128.0
+            
+            return audio_data, audio.frame_rate
+            
+        except Exception as e:
+            raise AudioProcessingError(f"Failed to load audio with pydub: {str(e)}") from e
+    
+    async def _preprocess_audio(self, audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
+        """
+        Preprocess audio data asynchronously.
         
+        Args:
+            audio_data: Raw audio data
+            sample_rate: Original sample rate
+            
+        Returns:
+            np.ndarray: Processed audio data
+        """
         try:
-            # Normalize
-            if normalize:
-                max_val = np.abs(processed_audio).max()
-                if max_val > 0:
-                    processed_audio = processed_audio / max_val
-                    logger.debug("Audio normalized")
+            # Run preprocessing in thread pool
+            processed = await asyncio.get_event_loop().run_in_executor(
+                self.executor, self._preprocess_sync, audio_data, sample_rate
+            )
             
-            # Silence removal (eğer aktifse)
-            if settings.remove_silence:
-                processed_audio = self._remove_silence(processed_audio)
-            
-            # Noise reduction (eğer aktifse)
-            if settings.noise_reduction:
-                processed_audio = self._reduce_noise(processed_audio)
-            
-            # NaN ve inf değerleri temizle
-            processed_audio = np.nan_to_num(processed_audio)
-            
-            # Değer aralığını kontrol et
-            processed_audio = np.clip(processed_audio, -1.0, 1.0)
-            
-            logger.debug("Audio preprocessing completed")
-            return processed_audio
-            
-        except Exception as e:
-            logger.warning(f"Preprocessing failed: {e}, returning original audio")
-            return audio_data
-    
-    def _remove_silence(self, audio_data: np.ndarray, top_db: int = 20) -> np.ndarray:
-        """Sessizlikleri kaldır (basit implementasyon)"""
-        try:
-            # Librosa ile silence detection
-            intervals = librosa.effects.split(audio_data, top_db=top_db)
-            
-            if len(intervals) == 0:
-                return audio_data
-            
-            # Sessiz olmayan kısımları birleştir
-            non_silent_audio = []
-            for start, end in intervals:
-                non_silent_audio.append(audio_data[start:end])
-            
-            if non_silent_audio:
-                result = np.concatenate(non_silent_audio)
-                logger.debug(f"Silence removed: {len(audio_data)} -> {len(result)} samples")
-                return result
-            else:
-                return audio_data
-                
-        except Exception as e:
-            logger.warning(f"Silence removal failed: {e}")
-            return audio_data
-    
-    def _reduce_noise(self, audio_data: np.ndarray) -> np.ndarray:
-        """Basit noise reduction (spektral subtraction benzeri)"""
-        try:
-            # Bu basit bir implementasyon - üretimde daha gelişmiş yöntemler kullanılabilir
-            
-            # RMS tabanlı gürültü tahmini (ilk %10 sessizlik varsayımı)
-            noise_sample_size = int(len(audio_data) * 0.1)
-            noise_sample = audio_data[:noise_sample_size]
-            noise_level = np.sqrt(np.mean(noise_sample**2))
-            
-            # Eşik altındaki değerleri azalt
-            threshold = noise_level * 2
-            mask = np.abs(audio_data) > threshold
-            
-            processed = audio_data.copy()
-            processed[~mask] *= 0.1  # Sessiz kısımları azalt
-            
-            logger.debug(f"Noise reduction applied, threshold: {threshold:.4f}")
+            logger.debug(f"Audio preprocessed: shape={processed.shape}")
             return processed
             
         except Exception as e:
-            logger.warning(f"Noise reduction failed: {e}")
+            logger.error(f"Audio preprocessing failed: {str(e)}")
+            raise AudioProcessingError(f"Preprocessing failed: {str(e)}") from e
+    
+    def _preprocess_sync(self, audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
+        """
+        Synchronous audio preprocessing.
+        
+        Args:
+            audio_data: Raw audio data
+            sample_rate: Original sample rate
+            
+        Returns:
+            np.ndarray: Processed audio data
+        """
+        # Resample if necessary
+        if sample_rate != self.target_sample_rate:
+            audio_data = librosa.resample(
+                audio_data, 
+                orig_sr=sample_rate, 
+                target_sr=self.target_sample_rate
+            )
+        
+        # Normalize audio
+        if self.normalize_audio:
+            # RMS normalization
+            rms = np.sqrt(np.mean(audio_data ** 2))
+            if rms > 0:
+                audio_data = audio_data / rms * 0.1  # Target RMS of 0.1
+            
+            # Peak normalization (ensure no clipping)
+            max_val = np.abs(audio_data).max()
+            if max_val > 1.0:
+                audio_data = audio_data / max_val
+        
+        # Apply noise reduction (simple spectral gating)
+        if self.apply_noise_reduction:
+            audio_data = self._reduce_noise(audio_data)
+        
+        # Trim silence
+        audio_data, _ = librosa.effects.trim(
+            audio_data, 
+            top_db=20,  # Trim silence below -20dB
+            frame_length=2048,
+            hop_length=512
+        )
+        
+        return audio_data
+    
+    def _reduce_noise(self, audio_data: np.ndarray) -> np.ndarray:
+        """
+        Simple noise reduction using spectral gating.
+        
+        Args:
+            audio_data: Input audio data
+            
+        Returns:
+            np.ndarray: Noise-reduced audio data
+        """
+        try:
+            # Compute spectral features
+            stft = librosa.stft(audio_data, n_fft=2048, hop_length=512)
+            magnitude = np.abs(stft)
+            
+            # Estimate noise floor (bottom 20% of magnitudes)
+            noise_floor = np.percentile(magnitude, 20, axis=1, keepdims=True)
+            
+            # Apply spectral gating (suppress frequencies below noise floor * 1.5)
+            gate_threshold = noise_floor * 1.5
+            mask = magnitude > gate_threshold
+            
+            # Apply mask with smooth transitions
+            gated_stft = stft * mask
+            
+            # Reconstruct audio
+            return librosa.istft(gated_stft, hop_length=512)
+            
+        except Exception:
+            # If noise reduction fails, return original audio
+            logger.warning("Noise reduction failed, using original audio")
             return audio_data
     
-    def save_processed_audio(
+    async def _extract_metadata(
         self, 
+        file_path: str, 
         audio_data: np.ndarray, 
-        sample_rate: int, 
-        output_path: str,
-        format: str = "wav"
-    ) -> str:
+        sample_rate: int
+    ) -> AudioMetadata:
         """
-        İşlenmiş audio'yu kaydet
+        Extract audio metadata asynchronously.
         
         Args:
-            audio_data: Audio verisi
-            sample_rate: Sample rate
-            output_path: Çıktı dosya yolu
-            format: Dosya formatı
+            file_path: Path to audio file
+            audio_data: Processed audio data
+            sample_rate: Audio sample rate
             
         Returns:
-            str: Kaydedilen dosya yolu
+            AudioMetadata: Extracted metadata
         """
         try:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Run metadata extraction in thread pool
+            metadata = await asyncio.get_event_loop().run_in_executor(
+                self.executor, self._extract_metadata_sync, file_path, audio_data, sample_rate
+            )
             
-            # Format'a göre kaydet
-            if format.lower() == "wav":
-                sf.write(str(output_path), audio_data, sample_rate)
-            else:
-                # Pydub ile diğer formatlar
-                audio_segment = AudioSegment(
-                    audio_data.tobytes(),
-                    frame_rate=sample_rate,
-                    sample_width=audio_data.dtype.itemsize,
-                    channels=1 if len(audio_data.shape) == 1 else audio_data.shape[1]
-                )
-                audio_segment.export(str(output_path), format=format)
-            
-            logger.info(f"Audio saved: {output_path}")
-            return str(output_path)
+            return metadata
             
         except Exception as e:
-            logger.error(f"Failed to save audio: {e}")
-            raise AudioLoadError(f"Save failed: {e}")
+            logger.warning(f"Metadata extraction failed: {str(e)}")
+            # Return basic metadata if extraction fails
+            return AudioMetadata(
+                duration=len(audio_data) / sample_rate,
+                sample_rate=sample_rate,
+                channels=1,
+                format=Path(file_path).suffix.lower(),
+                file_size=Path(file_path).stat().st_size
+            )
     
-    def get_audio_info(self, file_path: str) -> Dict[str, Any]:
+    def _extract_metadata_sync(
+        self, 
+        file_path: str, 
+        audio_data: np.ndarray, 
+        sample_rate: int
+    ) -> AudioMetadata:
         """
-        Ses dosyası hakkında detaylı bilgi al
+        Synchronous metadata extraction.
         
         Args:
-            file_path: Ses dosyası yolu
+            file_path: Path to audio file
+            audio_data: Processed audio data
+            sample_rate: Audio sample rate
             
         Returns:
-            Dict: Detaylı audio bilgileri
+            AudioMetadata: Extracted metadata
         """
+        path = Path(file_path)
+        
+        # Basic metadata from processed audio
+        duration = len(audio_data) / sample_rate
+        file_size = path.stat().st_size
+        
+        # Additional metadata from file
+        extra_metadata = {}
+        
         try:
-            validation_info = self.validate_file(file_path)
-            
-            # Ek bilgiler
-            file_path = Path(file_path)
-            
-            # Audio özelliklerini analiz et
-            audio_data, sample_rate = self.load_audio(file_path, normalize=False)
-            
-            # Temel istatistikler
-            rms_energy = np.sqrt(np.mean(audio_data**2))
-            max_amplitude = np.abs(audio_data).max()
-            zero_crossing_rate = np.mean(librosa.feature.zero_crossing_rate(audio_data)[0])
-            
-            # Spektral özellikler
-            spectral_centroid = np.mean(librosa.feature.spectral_centroid(y=audio_data, sr=sample_rate)[0])
-            spectral_bandwidth = np.mean(librosa.feature.spectral_bandwidth(y=audio_data, sr=sample_rate)[0])
-            
-            info = {
-                **validation_info,
-                "audio_stats": {
-                    "rms_energy": float(rms_energy),
-                    "max_amplitude": float(max_amplitude),
-                    "zero_crossing_rate": float(zero_crossing_rate),
-                    "spectral_centroid": float(spectral_centroid),
-                    "spectral_bandwidth": float(spectral_bandwidth),
-                    "dynamic_range": float(max_amplitude / (rms_energy + 1e-8))
-                }
-            }
-            
-            logger.info(f"Audio info extracted for: {file_path.name}")
-            return info
-            
-        except Exception as e:
-            logger.error(f"Failed to get audio info: {e}")
-            raise AudioLoadError(f"Info extraction failed: {e}")
-    
-    def batch_validate(self, file_paths: List[str]) -> Dict[str, Dict[str, Any]]:
-        """
-        Birden fazla dosyayı toplu doğrula
-        
-        Args:
-            file_paths: Dosya yolları listesi
-            
-        Returns:
-            Dict: Dosya adı -> validation sonucu mapping
-        """
-        results = {}
-        
-        for file_path in file_paths:
-            try:
-                file_name = Path(file_path).name
-                results[file_name] = self.validate_file(file_path)
-                results[file_name]["status"] = "valid"
+            # Try to extract metadata using mutagen
+            audio_file = mutagen.File(file_path)
+            if audio_file:
+                # Extract common tags
+                if hasattr(audio_file, 'info'):
+                    info = audio_file.info
+                    extra_metadata.update({
+                        'bitrate': getattr(info, 'bitrate', None),
+                        'original_duration': getattr(info, 'length', duration),
+                        'original_channels': getattr(info, 'channels', 1)
+                    })
                 
-            except AudioValidationError as e:
-                file_name = Path(file_path).name if file_path else "unknown"
-                results[file_name] = {
-                    "valid": False,
-                    "status": "invalid",
-                    "error": str(e)
-                }
-            except Exception as e:
-                file_name = Path(file_path).name if file_path else "unknown"
-                results[file_name] = {
-                    "valid": False,
-                    "status": "error",
-                    "error": f"Unexpected error: {e}"
-                }
+                # Extract tags
+                tags = dict(audio_file.tags) if audio_file.tags else {}
+                extra_metadata['tags'] = tags
+                
+        except (ID3NoHeaderError, Exception) as e:
+            logger.debug(f"Could not extract detailed metadata: {str(e)}")
         
-        logger.info(f"Batch validation completed: {len(results)} files")
-        return results
-
-# ================================
-# UTILITY FUNCTIONS
-# ================================
-
-def create_audio_loader() -> AudioLoader:
-    """AudioLoader singleton factory"""
-    return AudioLoader()
-
-# Global instance
-audio_loader = create_audio_loader()
-
-# ================================
-# CONVENIENCE FUNCTIONS
-# ================================
-
-def load_audio_file(
-    file_path: str, 
-    target_sr: Optional[int] = None,
-    mono: bool = True,
-    normalize: bool = None
-) -> Tuple[np.ndarray, int]:
-    """
-    Convenience function - ses dosyası yükleme
-    
-    Args:
-        file_path: Ses dosyası yolu
-        target_sr: Hedef sample rate
-        mono: Mono dönüşüm
-        normalize: Normalize
-        
-    Returns:
-        Tuple[np.ndarray, int]: (audio_data, sample_rate)
-    """
-    return audio_loader.load_audio(file_path, target_sr, mono, normalize)
-
-def validate_audio_file(file_path: str) -> Dict[str, Any]:
-    """
-    Convenience function - ses dosyası doğrulama
-    
-    Args:
-        file_path: Ses dosyası yolu
-        
-    Returns:
-        Dict: Doğrulama sonucu
-    """
-    return audio_loader.validate_file(file_path)
-
-def get_audio_file_info(file_path: str) -> Dict[str, Any]:
-    """
-    Convenience function - ses dosyası bilgisi
-    
-    Args:
-        file_path: Ses dosyası yolu
-        
-    Returns:
-        Dict: Detaylı ses bilgisi
-    """
-    return audio_loader.get_audio_info(file_path)
-
-# ================================
-# EXAMPLE USAGE
-# ================================
-
-if __name__ == "__main__":
-    # Test ve örnek kullanım
-    import sys
-    
-    if len(sys.argv) > 1:
-        test_file = sys.argv[1]
-        
+        # Compute audio characteristics
         try:
-            print(f"Testing AudioLoader with: {test_file}")
+            # RMS energy
+            rms_energy = np.sqrt(np.mean(audio_data ** 2))
             
-            # Validate
-            validation = validate_audio_file(test_file)
-            print(f"Validation: {validation}")
+            # Zero crossing rate
+            zcr = librosa.feature.zero_crossing_rate(audio_data)[0]
             
-            # Load
-            audio_data, sr = load_audio_file(test_file)
-            print(f"Loaded: {audio_data.shape}, {sr}Hz")
+            # Spectral centroid
+            spectral_centroid = librosa.feature.spectral_centroid(
+                y=audio_data, sr=sample_rate
+            )[0]
             
-            # Info
-            info = get_audio_file_info(test_file)
-            print(f"Info: {info['audio_stats']}")
+            extra_metadata.update({
+                'rms_energy': float(rms_energy),
+                'zcr_mean': float(np.mean(zcr)),
+                'spectral_centroid_mean': float(np.mean(spectral_centroid))
+            })
             
         except Exception as e:
-            print(f"Error: {e}")
-    else:
-        print("Usage: python audio_loader.py <audio_file>")
-        print("AudioLoader module loaded successfully!")
+            logger.debug(f"Could not compute audio characteristics: {str(e)}")
+        
+        return AudioMetadata(
+            duration=duration,
+            sample_rate=sample_rate,
+            channels=1,  # Always mono after processing
+            format=path.suffix.lower(),
+            file_size=file_size,
+            **extra_metadata
+        )
+    
+    async def _get_file_hash(self, file_path: str) -> str:
+        """
+        Calculate file hash for caching.
+        
+        Args:
+            file_path: Path to audio file
+            
+        Returns:
+            str: SHA256 hash of file
+        """
+        try:
+            def _calculate_hash():
+                hash_sha256 = hashlib.sha256()
+                with open(file_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(4096), b""):
+                        hash_sha256.update(chunk)
+                return hash_sha256.hexdigest()
+            
+            file_hash = await asyncio.get_event_loop().run_in_executor(
+                self.executor, _calculate_hash
+            )
+            
+            return file_hash
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate file hash: {str(e)}")
+            # Fallback to file path + size + mtime
+            path = Path(file_path)
+            stat = path.stat()
+            fallback_data = f"{file_path}:{stat.st_size}:{stat.st_mtime}"
+            return hashlib.sha256(fallback_data.encode()).hexdigest()
+    
+    def __del__(self):
+        """Cleanup thread pool executor."""
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)
+
+# Global instance for reuse
+_audio_loader_instance: Optional[AudioLoader] = None
+
+def get_audio_loader(config: Optional[Settings] = None) -> AudioLoader:
+    """
+    Get AudioLoader singleton instance.
+    
+    Args:
+        config: Optional configuration override
+        
+    Returns:
+        AudioLoader: Singleton instance
+    """
+    global _audio_loader_instance
+    
+    if _audio_loader_instance is None:
+        _audio_loader_instance = AudioLoader(config)
+    
+    return _audio_loader_instance

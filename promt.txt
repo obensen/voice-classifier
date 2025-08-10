@@ -142,7 +142,7 @@ Sen bu projeyi GitHub'dan aldıktan sonra şu şekilde devam et:
 - Cache integration için file hash desteği
 - Robust error handling
 
-Bu dosyayı oluşturduktan sonra PROGRESS_LOG.md'yi güncelle. Projenin mevcut yapısına uygun, performanslı ve production-ready bir implementasyon istiyorum."**
+Bu dosyayı oluşturduktan sonra PROGRESS_LOG.md'yi mevcut yapısını koruyarak güncelle. Projenin mevcut yapısına uygun, performanslı ve production-ready bir implementasyon istiyorum."**
 
 ## 🔍 ÖNEMLİ NOTLAR
 
@@ -153,5 +153,6 @@ Bu dosyayı oluşturduktan sonra PROGRESS_LOG.md'yi güncelle. Projenin mevcut y
 5. **Modularity**: Gevşek bağlı, yeniden kullanılabilir kod
 6. **Configuration**: Environment-based, flexible settings
 7. **Testing**: Mock responses ile testable yapı
+8. **Projenin açıklamalarını türkçe yap  PROGRESS_LOG dosyasını mevcut halinde editleyerek ilerle
 
 **Bu prompt'u kullandığında proje context'ini tam olarak anlayacaksın ve kaldığımız yerden devam edebileceksin.**
